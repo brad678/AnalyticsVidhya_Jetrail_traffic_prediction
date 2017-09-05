@@ -1,0 +1,239 @@
+---
+title: "JetRail"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(forecast)
+library(TTR)
+library(Metrics)
+library(dplyr)
+library(zoo)
+library(ggplot2)
+library(readr)
+library(xts)
+library(smooth)
+library(caret)
+
+```
+
+
+```{r}
+train <- read_csv('Train_SU63ISt.csv')
+
+```
+
+```{r}
+test <- read_csv("Test_0qrQsBZ.csv")
+```
+
+```{r}
+
+time_index <- seq(from = as.POSIXct("2012-08-25 00:00"), to = as.POSIXct("2014-09-25 23:00"), by = "hour")
+
+train_hr <- xts(train$Count, order.by = time_index)
+
+head(train_hr);tail(train_hr);
+
+```
+
+```{r}
+plot(train_hr)
+```
+
+```{r}
+
+x <- msts(train$Count, seasonal.periods=c(24,24*7,365.25*24), start=2012+34/52)
+plot(x)
+
+```
+
+#decomposition
+```{r}
+
+stl1 <- stl(x,s.window = "periodic")
+plot(stl1)
+
+```
+
+```{r}
+x1 <- ts(train$Count, frequency=24*1)
+x2 <- ts(train$Count, frequency=24*7)
+x3 <- ts(train$Count, frequency=24*365)
+```
+
+
+
+```{r}
+CES_auto2 <- auto.ces(x2)
+f2 <- forecast(CES_auto2,h=nrow(test))
+test_op2 <- data.frame(test$ID, f2$mean)
+colnames(test_op2) <- c("ID","Count")
+dir <- "C:\\Users\\Srimala Bharadwaj\\Desktop\\Data science\\AV\\JetRail"
+write_csv(test_op2, file.path(dir, "CES2.csv"), col_names = TRUE)
+
+
+```
+
+#xgb
+
+```{r}
+#Creating features
+
+train_x <- train
+test_x <- test
+
+
+train_x$Count <- log(train$Count) #log transformation
+
+train_x$Datetime<-as.POSIXct(train$Datetime,"%d-%m-%Y %H:%M", tz="GMT")
+test_x$Datetime<-as.POSIXct(test$Datetime,"%d-%m-%Y %H:%M", tz="GMT")
+
+train_x$year<-as.numeric(format(train_x$Datetime, "%Y"))
+test_x$year<-as.numeric(format(test_x$Datetime, "%Y"))
+
+
+train_x$month<-as.numeric(format(train_x$Datetime, "%m"))
+test_x$month<-as.numeric(format(test_x$Datetime, "%m"))
+
+
+train_x$day<-as.numeric(format(train_x$Datetime, "%d"))
+test_x$day<-as.numeric(format(test_x$Datetime, "%d"))
+
+
+train_x$weekday<-as.factor(weekdays(train_x$Datetime))
+test_x$weekday<-as.factor(weekdays(test_x$Datetime))
+
+train_x$hour<-as.numeric(format(train_x$Datetime, "%H"))
+test_x$hour<-as.numeric(format(test_x$Datetime, "%H"))
+#train_x$hour<-as.factor(format(train_x$Datetime, "%H"))
+#test_x$hour<-as.factor(format(test_x$Datetime, "%H"))
+
+
+
+train_x$dow<-as.numeric(format(train_x$Datetime, "%w"))
+test_x$dow<-as.numeric(format(test_x$Datetime, "%w"))
+
+
+
+
+train_x$peak<-as.factor(ifelse(train_x$hour >= 2 & train_x$hour <=10,"np","p"))
+test_x$peak<-as.factor(ifelse(test_x$hour >= 2 & test_x$hour <=10,"np","p"))
+
+
+
+train_x$weekend<-as.factor(ifelse(weekdays(train_x$Datetime)=="Saturday" | weekdays(train_x$Datetime)=="Sunday","Y","N"))
+test_x$weekend<-as.factor(ifelse(weekdays(test_x$Datetime)=="Saturday" | weekdays(test_x$Datetime)=="Sunday","Y","N"))
+
+
+
+predictors<-c("year", "month", "day", "weekday.Friday", "weekday.Monday", "weekday.Saturday", "weekday.Sunday", "weekday.Thursday", "weekday.Tuesday", "weekday.Wednesday", "peak.p", "peak.np")
+
+predictors2<-c("year", "month", "day", "weekday.Friday", "weekday.Monday", "weekday.Saturday", "weekday.Sunday", "weekday.Thursday", "weekday.Tuesday", "weekday.Wednesday", "peak.p", "peak.np","weekend.Y", "weekend.N" )
+
+
+dmy <- dummyVars(" ~ .", data = train_x, fullRank = F)
+x_train <- data.frame(predict(dmy, newdata = train_x))
+
+
+dmy <- dummyVars(" ~ .", data = test_x, fullRank = F)
+x_test <- data.frame(predict(dmy, newdata = test_x))
+
+
+
+#creating model
+
+
+for(i in 0:23)
+{
+  temp_train <- x_train %>% filter(hour==i)
+  temp_test <- x_test %>% filter(hour==i)
+  set.seed(101)
+  model_xgbi <- train(temp_train[,predictors2],
+                  temp_train$Count,
+                  method = 'xgbTree',
+                  verbose = FALSE,
+                  trControl = fitcontrol)
+  
+  test_op <- data.frame(ID=temp_test$ID,Count=exp(predict(model_xgbi,temp_test[,predictors2])))
+  colnames(test_op) <- c("ID","Count")
+  write_csv(test_op, file.path(dir, "nxgbi.csv"), col_names=ifelse(i %in% 0, TRUE, FALSE), append=TRUE)
+  print(i)
+  
+}
+
+
+for(i in 0:23)
+{
+  temp_train <- x_train %>% filter(hour==i)
+  temp_test <- x_test %>% filter(hour==i)
+  set.seed(101)
+  model_xgbi <- train(temp_train[,predictors],
+                  temp_train$Count,
+                  method = 'xgbTree',
+                  verbose = FALSE,
+                  trControl = fitcontrol)
+  
+  test_op <- data.frame(ID=temp_test$ID,Count=exp(predict(model_xgbi,temp_test[,predictors])))
+  colnames(test_op) <- c("ID","Count")
+  write_csv(test_op, file.path(dir, "xgbi.csv"), col_names=ifelse(i %in% 0, TRUE, FALSE), append=TRUE)
+  print(i)
+  
+}
+
+
+```
+
+
+```{r}
+
+tmp1 <- read_csv('CES2.csv')
+tmp2 <- read_csv('xgbi.csv')
+
+tmp2 <- tmp2 %>% arrange(ID)
+
+test_op <- data.frame(tmp1$ID, ifelse(tmp1$Count>=tmp2$Count,tmp1$Count,tmp2$Count))
+colnames(test_op) <- c("ID","Count")
+write_csv(test_op, file.path(dir, "tmpmax.csv"), col_names = TRUE)
+
+
+tmp1 <- read_csv('CES2.csv')
+tmp2 <- read_csv('nxgbi.csv')
+
+tmp2 <- tmp2 %>% arrange(ID)
+
+test_op <- data.frame(tmp1$ID, ifelse(tmp1$Count>=tmp2$Count,tmp1$Count,tmp2$Count))
+colnames(test_op) <- c("ID","Count")
+write_csv(test_op, file.path(dir, "tmpmax1.csv"), col_names = TRUE)
+
+
+tmp1 <- read_csv('xgbi.csv')
+tmp2 <- read_csv('nxgbi.csv')
+
+tmp1 <- tmp1 %>% arrange(ID)
+tmp2 <- tmp2 %>% arrange(ID)
+
+test_op <- data.frame(tmp1$ID, ifelse(tmp1$Count>=tmp2$Count,tmp1$Count,tmp2$Count))
+colnames(test_op) <- c("ID","Count")
+write_csv(test_op, file.path(dir, "tmpmax2.csv"), col_names = TRUE)
+
+tmp1 <- read_csv('tmpmax.csv')
+tmp2 <- read_csv('tmpmax1.csv')
+tmp3 <- read_csv('tmpmax2.csv')
+
+test_op <- data.frame(tmp1$ID, (tmp1$Count+tmp2$Count+tmp3$Count)/3)
+colnames(test_op) <- c("ID","Count")
+write_csv(test_op, file.path(dir, "tmpmaxavg.csv"), col_names = TRUE)
+
+
+```
+
